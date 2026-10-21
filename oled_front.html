@@ -1,0 +1,611 @@
+<!DOCTYPE html>
+<html lang="fr">
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#1a1d24">
+  <title>OLED 128×64 – dessin en direct</title>
+  <style>
+    :root {
+      --bg: #1a1d24;
+      --panel: #242933;
+      --panel-hi: #2e3542;
+      --line: #3a4252;
+      --text: #e8ecf2;
+      --muted: #98a2b3;
+      --pixel: #d6ecff;
+      /* blanc légèrement bleuté d’un vrai OLED */
+      --accent: #ffb347;
+      /* outil actif + aperçu des formes */
+      --ok: #5fd38d;
+      --radius: 14px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      height: 100%;
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 500 14px/1.2 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      overscroll-behavior: none;
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    button {
+      font: inherit;
+      color: inherit;
+      cursor: pointer;
+    }
+
+    button:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    /* ---------- Mise en page paysage : rail d’outils | écran | commandes ---------- */
+    .app {
+      height: 100dvh;
+      display: grid;
+      grid-template-columns: 76px minmax(0, 1fr) 148px;
+      gap: 10px;
+      padding: max(8px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
+    }
+
+    /* Outils */
+    .tools {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-height: 0;
+    }
+
+    .tool {
+      flex: 1 1 0;
+      min-height: 0;
+      max-height: 76px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+    }
+
+    .tool svg {
+      width: 26px;
+      height: 26px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    .tool span {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .tool[aria-pressed="true"] {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #231600;
+    }
+
+    .tool[aria-pressed="true"] span {
+      color: #231600;
+    }
+
+    /* Écran OLED (ratio 2:1, occupe tout l’espace disponible) */
+    .stage {
+      container-type: size;
+      display: grid;
+      place-items: center;
+      min-width: 0;
+      min-height: 0;
+    }
+
+    .bezel {
+      width: min(100cqw, 200cqh);
+      aspect-ratio: 2 / 1;
+      padding: 2.2%;
+      border-radius: 14px;
+      background: #0e1015;
+      border: 1px solid var(--line);
+      box-shadow: inset 0 0 0 2px #05060a;
+    }
+
+    .screen {
+      position: relative;
+      width: 100%;
+      height: 100%;
+      background: #000;
+      touch-action: none;
+    }
+
+    .screen canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+
+    /* Quadrillage : une cellule = un pixel de l’OLED */
+    .screen::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background-image:
+        linear-gradient(to right, rgba(255, 255, 255, .07) 1px, transparent 1px),
+        linear-gradient(to bottom, rgba(255, 255, 255, .07) 1px, transparent 1px);
+      background-size: calc(100% / 128) calc(100% / 64);
+    }
+
+    /* Commandes */
+    .side {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scrollbar-width: thin;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 8px;
+    }
+
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 6px;
+      min-width: 0;
+    }
+
+    #status-text {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: #6b7384;
+      flex: none;
+    }
+
+    .online .dot {
+      background: var(--ok);
+    }
+
+    .btn {
+      width: 100%;
+      min-height: 44px;
+      padding: 0 10px;
+      background: var(--panel-hi);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+    }
+
+    .btn:active {
+      background: var(--line);
+    }
+
+    .btn:disabled,
+    select:disabled {
+      opacity: .45;
+    }
+
+    select {
+      width: 100%;
+      min-height: 40px;
+      margin-bottom: 6px;
+      padding: 0 8px;
+      background: var(--panel-hi);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      font: inherit;
+    }
+
+    .swatches {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
+    .swatch {
+      min-height: 56px;
+      border-radius: 10px;
+      border: 2px solid var(--line);
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      padding-bottom: 5px;
+      font-size: 12px;
+    }
+
+    .swatch[data-c="1"] {
+      background: var(--pixel);
+      color: #0c1a26;
+    }
+
+    .swatch[data-c="0"] {
+      background: #000;
+      color: var(--text);
+    }
+
+    .swatch[aria-pressed="true"] {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px var(--accent);
+    }
+
+    .hint {
+      margin: 6px 2px 0;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .clear {
+      flex: none;
+      border-color: #86504a;
+      color: #ffa396;
+      font-weight: 600;
+    }
+
+    .readout {
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    /* Écrans très bas (petits téléphones) */
+    @media (max-height: 420px) {
+      .side {
+        gap: 6px;
+      }
+
+      .card {
+        padding: 6px;
+      }
+
+      .status {
+        margin-bottom: 4px;
+      }
+
+      select {
+        min-height: 36px;
+        margin-bottom: 4px;
+      }
+
+      .btn {
+        min-height: 38px;
+      }
+
+      .swatch {
+        min-height: 40px;
+      }
+
+      .hint {
+        display: none;
+      }
+    }
+
+    @media (max-height: 340px) {
+      .app {
+        grid-template-columns: 64px minmax(0, 1fr) 128px;
+        gap: 8px;
+      }
+
+      .tool span {
+        display: none;
+      }
+
+      .swatch {
+        min-height: 36px;
+      }
+    }
+
+    /* Portrait : on demande de tourner l’appareil */
+    .rotate {
+      display: none;
+      position: fixed;
+      inset: 0;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 14px;
+      text-align: center;
+      padding: 24px;
+      background: var(--bg);
+    }
+
+    .rotate svg {
+      width: 56px;
+      height: 56px;
+      fill: none;
+      stroke: var(--accent);
+      stroke-width: 2;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+
+    @media (orientation: portrait) {
+      .rotate {
+        display: flex;
+      }
+
+      .app {
+        display: none;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <main class="app">
+    <!-- Outils -->
+    <nav class="tools" aria-label="Outils de dessin">
+      <button class="tool" data-tool="crayon" aria-pressed="true">
+        <svg viewBox="0 0 24 24">
+          <path d="M4 20l1-4L16.5 4.5a2.1 2.1 0 013 3L8 19l-4 1z" />
+        </svg><span>Crayon</span></button>
+      <button class="tool" data-tool="ligne" aria-pressed="false">
+        <svg viewBox="0 0 24 24">
+          <path d="M5 19L19 5" />
+        </svg><span>Ligne</span></button>
+      <button class="tool" data-tool="cercle" aria-pressed="false">
+        <svg viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="8" />
+        </svg><span>Cercle</span></button>
+      <button class="tool" data-tool="carre" aria-pressed="false">
+        <svg viewBox="0 0 24 24">
+          <rect x="5" y="5" width="14" height="14" />
+        </svg><span>Carré</span></button>
+      <button class="tool" data-tool="triangle" aria-pressed="false">
+        <svg viewBox="0 0 24 24">
+          <path d="M12 5l8 14H4z" />
+        </svg><span>Triangle</span></button>
+    </nav>
+
+    <!-- Écran -->
+    <section class="stage" aria-label="Écran OLED 128 par 64">
+      <div class="bezel">
+        <div class="screen" id="screen">
+          <canvas id="px" width="128" height="64"></canvas>
+          <canvas id="preview" width="128" height="64"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- Commandes -->
+    <aside class="side">
+      <div class="card" id="conn">
+        <div class="status"><span class="dot"></span><span id="status-text">Connexion…</span></div>
+        <select id="port-select" aria-label="Port série de l’Arduino"></select>
+        <button class="btn" id="btn-conn" disabled>Connecter</button>
+      </div>
+
+      <button class="btn clear" id="btn-clear">Effacer la matrice</button>
+
+      <div class="card">
+        <div class="swatches" role="group" aria-label="Couleur du pixel">
+          <button class="swatch" data-c="1" aria-pressed="true">Blanc</button>
+          <button class="swatch" data-c="0" aria-pressed="false">Noir</button>
+        </div>
+        <p class="hint">Noir = gomme</p>
+      </div>
+
+      <div class="readout" id="readout">x – · y –</div>
+    </aside>
+  </main>
+
+  <div class="rotate" role="alert">
+    <svg viewBox="0 0 24 24">
+      <rect x="7" y="2" width="10" height="20" rx="2" />
+      <path d="M3 9a9 9 0 019-6M21 15a9 9 0 01-9 6" />
+    </svg>
+    <strong>Tournez votre téléphone</strong>
+    <span>Le dessin s’utilise en mode paysage.</span>
+  </div>
+
+  <script>
+    /* ---------------------------------------------------------------
+       JS minimal : sert à tester le design (outils, dessin local).
+       Branché sur oled_server.py par WebSocket (Firefox n’a pas Web Serial).
+       Ouvert sans serveur (file://), la page reste en mode démo local.
+    ---------------------------------------------------------------- */
+    /* Protocole : 2 octets par pixel [1 C yyyyyy][0 xxxxxxx] ; 0x7F seul = effacer */
+    let ws = null, wsOk = false, st = { connected: false, port: null, ports: [], error: null };
+    const wsSend = (data) => { if (ws && ws.readyState === 1) ws.send(data); };
+    const link = {
+      pixels(list, c) {
+        const b = new Uint8Array(list.length * 2);
+        list.forEach(([x, y], i) => { b[2 * i] = 0x80 | (c << 6) | y; b[2 * i + 1] = x; });
+        wsSend(b);
+      },
+      clear() { wsSend(new Uint8Array([0x7f])); }
+    };
+
+    const W = 128, H = 64;
+    const $ = (id) => document.getElementById(id);
+    const ctx = $('px').getContext('2d'), pctx = $('preview').getContext('2d');
+    const grid = new Uint8Array(W * H);
+    let tool = 'crayon', color = 1, start = null, last = null;
+
+    /* ---- formes (mêmes algorithmes que l’app Python) ---- */
+    function line(x0, y0, x1, y1) {
+      const pts = [], dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0);
+      const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+      let err = dx + dy;
+      for (; ;) {
+        pts.push([x0, y0]);
+        if (x0 === x1 && y0 === y1) break;
+        const e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+      }
+      return pts;
+    }
+    function circle(cx, cy, r) {
+      const set = new Map(), add = (x, y) => set.set(x + ',' + y, [x, y]);
+      let x = r, y = 0, d = 1 - r;
+      while (x >= y) {
+        [[x, y], [y, x], [-x, y], [-y, x], [x, -y], [y, -x], [-x, -y], [-y, -x]].forEach(([a, b]) => add(cx + a, cy + b));
+        y++;
+        if (d < 0) d += 2 * y + 1; else { x--; d += 2 * (y - x) + 1; }
+      }
+      return [...set.values()];
+    }
+    function poly(corners) {
+      const set = new Map();
+      corners.forEach((a, i) => line(...a, ...corners[(i + 1) % corners.length]).forEach(p => set.set(p + '', p)));
+      return [...set.values()];
+    }
+    function shape(a, b) {
+      if (tool === 'ligne') return line(...a, ...b);
+      if (tool === 'cercle') return circle(a[0], a[1], Math.round(Math.hypot(b[0] - a[0], b[1] - a[1])));
+      if (tool === 'carre') {
+        const s = Math.max(Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]));
+        const x1 = a[0] + s * (b[0] >= a[0] ? 1 : -1), y1 = a[1] + s * (b[1] >= a[1] ? 1 : -1);
+        return poly([[a[0], a[1]], [x1, a[1]], [x1, y1], [a[0], y1]]);
+      }
+      if (tool === 'triangle') return poly([[(a[0] + b[0]) >> 1, a[1]], [b[0], b[1]], [a[0], b[1]]]);
+      return [];
+    }
+
+    /* ---- rendu ---- */
+    function paint(x, y, c) {
+      if (x < 0 || y < 0 || x >= W || y >= H || grid[y * W + x] === c) return false;
+      grid[y * W + x] = c;
+      ctx.fillStyle = c ? '#d6ecff' : '#000';
+      ctx.fillRect(x, y, 1, 1);
+      return true;
+    }
+    function apply(pts, c) {
+      const changed = pts.filter(([x, y]) => paint(x, y, c));
+      if (changed.length) link.pixels(changed, c);
+    }
+    function clearLocal() { grid.fill(0); ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); }
+    function remote(bytes) {                       // dessin reçu du serveur (autre client / état initial)
+      let hi = -1;
+      for (const v of bytes) {
+        if (v & 0x80) hi = v;
+        else if (hi >= 0) { paint(v, hi & 63, (hi >> 6) & 1); hi = -1; }
+        else if (v === 0x7f) clearLocal();
+      }
+    }
+    function drawPreview(pts) {
+      pctx.clearRect(0, 0, W, H);
+      pctx.fillStyle = '#ffb347';
+      for (const [x, y] of pts) if (x >= 0 && y >= 0 && x < W && y < H) pctx.fillRect(x, y, 1, 1);
+    }
+
+    /* ---- interactions tactiles / souris ---- */
+    const screen = $('screen');
+    function pos(e) {
+      const r = screen.getBoundingClientRect();
+      return [Math.max(0, Math.min(W - 1, Math.floor((e.clientX - r.left) / r.width * W))),
+      Math.max(0, Math.min(H - 1, Math.floor((e.clientY - r.top) / r.height * H)))];
+    }
+    screen.addEventListener('pointerdown', (e) => {
+      screen.setPointerCapture(e.pointerId);
+      start = last = pos(e);
+      if (tool === 'crayon') apply([start], color);
+    });
+    screen.addEventListener('pointermove', (e) => {
+      const p = pos(e);
+      $('readout').textContent = `x ${p[0]} · y ${p[1]}`;
+      if (!start) return;
+      if (tool === 'crayon') { apply(line(...last, ...p), color); last = p; }
+      else drawPreview(shape(start, p));
+    });
+    const end = (commit) => (e) => {
+      if (!start) return;
+      if (commit && tool !== 'crayon') apply(shape(start, pos(e)), color);
+      pctx.clearRect(0, 0, W, H);
+      start = last = null;
+    };
+    screen.addEventListener('pointerup', end(true));
+    screen.addEventListener('pointercancel', end(false));
+
+    /* ---- barre d’outils ---- */
+    document.querySelectorAll('.tool').forEach(b => b.addEventListener('click', () => {
+      tool = b.dataset.tool;
+      document.querySelectorAll('.tool').forEach(o => o.setAttribute('aria-pressed', o === b));
+    }));
+    document.querySelectorAll('.swatch').forEach(b => b.addEventListener('click', () => {
+      color = +b.dataset.c;
+      document.querySelectorAll('.swatch').forEach(o => o.setAttribute('aria-pressed', o === b));
+    }));
+    $('btn-clear').addEventListener('click', () => { clearLocal(); link.clear(); });
+
+    /* ---- connexion au serveur + choix du port série ---- */
+    const live = location.protocol === 'http:' || location.protocol === 'https:';
+    let portsKey = '';
+    function render() {
+      const sel = $('port-select'), btn = $('btn-conn');
+      let text;
+      if (!live) text = 'Mode démo (sans serveur)';
+      else if (!wsOk) text = 'Serveur injoignable';
+      else if (st.connected) text = 'Connecté · ' + st.port;
+      else text = st.error || 'Arduino hors ligne';
+      $('status-text').textContent = text; $('status-text').title = text;
+      $('conn').classList.toggle('online', wsOk && st.connected);
+
+      const key = JSON.stringify(st.ports);
+      if (key !== portsKey) {                              // ne reconstruit que si la liste change
+        portsKey = key; const keep = sel.value; sel.innerHTML = '';
+        st.ports.forEach(p => sel.add(new Option(p.device, p.device)));
+        if (!st.ports.length) sel.add(new Option('Aucun port', ''));
+        if (keep) sel.value = keep;
+      }
+      if (st.connected && st.port) sel.value = st.port;
+      sel.disabled = !wsOk || st.connected || !st.ports.length;
+      btn.textContent = st.connected ? 'Déconnecter' : 'Connecter';
+      btn.disabled = !wsOk || (!st.connected && !sel.value);
+    }
+    $('btn-conn').addEventListener('click', () =>
+      wsSend(JSON.stringify(st.connected ? { cmd: 'close' } : { cmd: 'open', port: $('port-select').value })));
+
+    function connectWS() {
+      ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws');
+      ws.binaryType = 'arraybuffer';
+      ws.onopen = () => { wsOk = true; render(); };
+      ws.onclose = () => { wsOk = false; render(); setTimeout(connectWS, 1500); };
+      ws.onmessage = (e) => {
+        if (typeof e.data === 'string') { st = JSON.parse(e.data); render(); }
+        else remote(new Uint8Array(e.data));
+      };
+    }
+    clearLocal(); render();
+    if (live) connectWS();
+  </script>
+</body>
+
+</html>
